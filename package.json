@@ -1,21 +1,5 @@
 {
-  "name": "engram-exp-downloader",
-  "version": "1.0.0",
-  "description": "Fast downloader for educational materials",
-  "main": "fast-downloader.js",
-  "type": "module",
-  "scripts": {
-    "start": "node fast-downloader.js",
-    "download": "node fast-downloader.js"
-  },
   "dependencies": {
-    "axios": "^1.6.0"
-  },
-  "keywords": [
-    "downloader",
-    "materials",
-    "automation"
-  ],
-  "author": "GitHub Actions",
-  "license": "MIT"
+    "axios": "^1.9.0"
+  }
 }
