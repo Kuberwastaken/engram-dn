@@ -1,0 +1,157 @@
+name: Download Materials
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: '0 2 * * 0'
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        fetch-depth: 1
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm install
+
+    - name: Create material directory
+      run: mkdir -p material
+
+    - name: Debug - Check files before download
+      run: |
+        echo "Current directory contents:"
+        ls -la
+        echo "Package.json exists: $([ -f package.json ] && echo 'YES' || echo 'NO')"
+        echo "Fast-downloader.js exists: $([ -f fast-downloader.js ] && echo 'YES' || echo 'NO')"
+        echo "Material directory exists: $([ -d material ] && echo 'YES' || echo 'NO')"
+
+    - name: Run fast downloader
+      id: download_step
+      run: |
+        echo "Starting download process..."
+        echo "Node version: $(node --version)"
+        echo "NPM version: $(npm --version)"
+        
+        if node fast-downloader.js; then
+          echo "download_success=true" >> $GITHUB_OUTPUT
+          echo "✅ Download completed successfully"
+        else
+          echo "download_success=false" >> $GITHUB_OUTPUT
+          echo "❌ Download failed"
+          exit 1
+        fi
+      env:
+        NODE_ENV: production
+
+    - name: Debug - Check files after download
+      if: always()
+      run: |
+        echo "Material directory contents after download:"
+        if [ -d "material" ]; then
+          echo "Material directory exists with $(find material -type f | wc -l) files"
+          ls -la material/ || echo "Cannot list material directory"
+          echo "First 10 files found:"
+          find material -type f | head -10 || echo "No files found"
+          echo "Total size: $(du -sh material 2>/dev/null | cut -f1 || echo 'Unknown')"
+        else
+          echo "❌ Material directory does not exist"
+        fi
+
+    - name: Check if files were downloaded
+      id: check_changes
+      run: |
+        echo "Checking git status..."
+        git status --porcelain
+        
+        if [ -n "$(git status --porcelain)" ]; then
+          echo "changes=true" >> $GITHUB_OUTPUT
+          echo "✅ Files were downloaded or modified"
+        else
+          echo "changes=false" >> $GITHUB_OUTPUT
+          echo "⚠️ No new files downloaded"
+        fi
+
+    - name: Configure Git
+      if: steps.check_changes.outputs.changes == 'true'
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+
+    - name: Add downloaded files
+      if: steps.check_changes.outputs.changes == 'true'
+      run: |
+        echo "Adding files to git..."
+        git add material/
+        git add -A
+        echo "Files added successfully"
+
+    - name: Commit files
+      if: steps.check_changes.outputs.changes == 'true'
+      run: |
+        echo "Creating commit..."
+        
+        DOWNLOADED_COUNT=$(find material -type f -name "*.pdf" -o -name "*.json" | wc -l || echo "0")
+        TOTAL_COUNT=$(find material -type f | wc -l || echo "0")
+        TOTAL_SIZE=$(du -sh material 2>/dev/null | cut -f1 || echo "0B")
+        TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M:%S UTC')
+        
+        git commit -m "📚 Auto-download materials - Total: $TOTAL_COUNT files ($TOTAL_SIZE) - PDF/JSON: $DOWNLOADED_COUNT - $TIMESTAMP - Run #${{ github.run_number }}" || echo "No changes to commit"
+
+    - name: Push changes
+      if: steps.check_changes.outputs.changes == 'true'
+      uses: ad-m/github-push-action@master
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        branch: ${{ github.ref }}
+
+    - name: Upload materials as artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: downloaded-materials-${{ github.run_number }}
+        path: material/
+        retention-days: 30
+        if-no-files-found: ignore
+
+    - name: Print summary
+      if: always()
+      run: |
+        echo "## Download Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- **Action Run**: #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Timestamp**: $(date -u)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Download Success**: ${{ steps.download_step.outputs.download_success || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+        
+        if [ -d "material" ]; then
+          FILE_COUNT=$(find material -type f | wc -l || echo "0")
+          PDF_JSON_COUNT=$(find material -type f -name "*.pdf" -o -name "*.json" | wc -l || echo "0")
+          TOTAL_SIZE=$(du -sh material 2>/dev/null | cut -f1 || echo "0B")
+          echo "- **Total Files**: $FILE_COUNT" >> $GITHUB_STEP_SUMMARY
+          echo "- **PDF/JSON Files**: $PDF_JSON_COUNT" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total Size**: $TOTAL_SIZE" >> $GITHUB_STEP_SUMMARY
+          echo "- **Changes Detected**: ${{ steps.check_changes.outputs.changes || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "- **Status**: ❌ No material directory found" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+        if [ "${{ steps.download_step.outputs.download_success }}" = "true" ] && [ "${{ steps.check_changes.outputs.changes }}" = "true" ]; then
+          echo "✅ Download completed successfully and files were committed!" >> $GITHUB_STEP_SUMMARY
+        elif [ "${{ steps.download_step.outputs.download_success }}" = "true" ] && [ "${{ steps.check_changes.outputs.changes }}" = "false" ]; then
+          echo "ℹ️ Download completed but no new files (all files already exist)" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ Download failed - check the logs above for error details" >> $GITHUB_STEP_SUMMARY
+          echo "💡 Try running the workflow again (resume functionality will continue where it left off)" >> $GITHUB_STEP_SUMMARY
+        fi
