@@ -1,6 +1,6 @@
 # ENGRAM-EXP Fast Downloader
 
-This repository contains an automated downloader that fetches educational materials and stores them directly in the GitHub repository using GitHub Actions.
+This repository contains an automated downloader that fetches educational materials and stores them directly in the GitHub repository using GitHub Actions. 
 
 ## Features
 
@@ -65,6 +65,42 @@ After running, your repository will have this structure:
 - **File Types**: PDFs, JSONs, and other educational materials
 - **Total Expected Files**: ~2,131 files
 - **Resume Capability**: Automatically skips existing files based on file size validation
+
+## Troubleshooting GitHub Actions Issues
+
+### Issue: "No material directory found"
+This usually indicates the download script failed to start or encountered an early error:
+
+**Solution Steps:**
+1. Check the "Run fast downloader" step logs for specific error messages
+2. Verify repository permissions (Settings → Actions → General → Read/write permissions)
+3. Ensure `package.json` and `fast-downloader.js` are in the repository root
+4. Try running the workflow again (the script has built-in resume capability)
+
+### Issue: Action fails with permission errors
+**Solution:**
+- Go to repository Settings → Actions → General
+- Under "Workflow permissions", select "Read and write permissions"
+- Enable "Allow GitHub Actions to create and approve pull requests"
+
+### Issue: Download timeout (6 hours)
+**Solution:**
+- This is normal for the first run due to the large number of files
+- Simply run the workflow again - the script will automatically resume where it left off
+- Monitor progress via the debug output to see how many files are being processed
+
+### Issue: API rate limiting or connection errors
+**Solution:**
+- The script has built-in retry mechanisms with exponential backoff
+- Wait a few minutes and run the workflow again
+- Check if the dotnotes.in API is accessible
+
+### Issue: Repository size limit warnings
+**Solution:**
+- GitHub has a soft limit of 1GB for repositories
+- Monitor repository size in Settings → General
+- Consider using Git LFS for large files if needed
+- The artifact backup provides an alternative download method
 
 ## Troubleshooting
 
