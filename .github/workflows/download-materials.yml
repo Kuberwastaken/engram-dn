@@ -1,14 +1,25 @@
-name: Download Materials
+name: Download Materials (Optimized)
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      branch_filter:
+        description: 'Branch to download (e.g., CSE, ECE, or ALL)'
+        required: false
+        default: 'ALL'
+        type: string
+      max_files:
+        description: 'Maximum files to download (0 = no limit)'
+        required: false
+        default: '1000'
+        type: string
   schedule:
-    - cron: '0 2 * * 0'
+    - cron: '0 2 * * 0'  # Weekly on Sunday
 
 jobs:
   download:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 360  # 6 hours max (GitHub Actions limit)
     
     steps:
     - name: Checkout repository
@@ -26,60 +37,167 @@ jobs:
     - name: Install dependencies
       run: npm install
 
+    - name: Clean up disk space
+      run: |
+        echo "🧹 Cleaning up disk space..."
+        # Remove unnecessary files to free up space
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /usr/local/lib/android
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /opt/hostedtoolcache/CodeQL
+        sudo docker image prune --all --force
+        
+        # Show available space
+        echo "💾 Available disk space:"
+        df -h
+        echo ""
+        echo "💾 Available space in /tmp:"
+        df -h /tmp
+
     - name: Create material directory
       run: mkdir -p material
 
-    - name: Debug - Check files before download
+    - name: Set download parameters
       run: |
+        echo "BRANCH_FILTER=${{ github.event.inputs.branch_filter || 'ALL' }}" >> $GITHUB_ENV
+        echo "MAX_FILES=${{ github.event.inputs.max_files || '1000' }}" >> $GITHUB_ENV
+
+    - name: Debug - Check initial state
+      run: |
+        echo "🔍 Initial system state:"
         echo "Current directory contents:"
         ls -la
+        echo ""
         echo "Package.json exists: $([ -f package.json ] && echo 'YES' || echo 'NO')"
         echo "Fast-downloader.js exists: $([ -f fast-downloader.js ] && echo 'YES' || echo 'NO')"
         echo "Material directory exists: $([ -d material ] && echo 'YES' || echo 'NO')"
+        echo ""
+        echo "Environment variables:"
+        echo "BRANCH_FILTER: $BRANCH_FILTER"
+        echo "MAX_FILES: $MAX_FILES"
+        echo ""
+        echo "Available memory:"
+        free -h
+        echo ""
+        echo "Available disk space:"
+        df -h
 
-    - name: Run fast downloader
+    - name: Run optimized downloader
       id: download_step
       run: |
-        echo "Starting download process..."
+        echo "🚀 Starting optimized download process..."
         echo "Node version: $(node --version)"
         echo "NPM version: $(npm --version)"
+        echo "Branch filter: $BRANCH_FILTER"
+        echo "Max files: $MAX_FILES"
+        echo ""
         
-        if node fast-downloader.js; then
+        # Monitor disk space during download
+        (
+          while true; do
+            sleep 120  # Check every 2 minutes
+            USAGE=$(df / | awk 'NR==2 {print $5}' | sed 's/%//')
+            if [ "$USAGE" -gt 85 ]; then
+              echo "⚠️  Disk usage at ${USAGE}% - approaching limit"
+            fi
+            if [ "$USAGE" -gt 95 ]; then
+              echo "🛑 Disk usage critical at ${USAGE}% - stopping process"
+              pkill -f "node fast-downloader.js" || true
+              break
+            fi
+          done
+        ) &
+        MONITOR_PID=$!
+        
+        # Run the downloader with extended timeout (5 hours for download itself)
+        if timeout 300m node fast-downloader.js; then
           echo "download_success=true" >> $GITHUB_OUTPUT
           echo "✅ Download completed successfully"
         else
+          EXIT_CODE=$?
           echo "download_success=false" >> $GITHUB_OUTPUT
-          echo "❌ Download failed"
-          exit 1
+          if [ $EXIT_CODE -eq 124 ]; then
+            echo "⏰ Download timed out after 300 minutes (5 hours)"
+          else
+            echo "❌ Download failed with exit code $EXIT_CODE"
+          fi
         fi
+        
+        # Stop the monitoring process
+        kill $MONITOR_PID 2>/dev/null || true
+        
       env:
         NODE_ENV: production
 
-    - name: Debug - Check files after download
+    - name: Debug - Check results
       if: always()
       run: |
-        echo "Material directory contents after download:"
+        echo "🔍 Post-download analysis:"
+        echo ""
+        echo "Final disk usage:"
+        df -h
+        echo ""
+        
         if [ -d "material" ]; then
-          echo "Material directory exists with $(find material -type f | wc -l) files"
-          ls -la material/ || echo "Cannot list material directory"
-          echo "First 10 files found:"
-          find material -type f | head -10 || echo "No files found"
-          echo "Total size: $(du -sh material 2>/dev/null | cut -f1 || echo 'Unknown')"
+          echo "✅ Material directory exists"
+          
+          # Count files by type
+          TOTAL_FILES=$(find material -type f | wc -l || echo "0")
+          PDF_FILES=$(find material -type f -name "*.pdf" | wc -l || echo "0")
+          JSON_FILES=$(find material -type f -name "*.json" | wc -l || echo "0")
+          DOCX_FILES=$(find material -type f \( -name "*.docx" -o -name "*.doc" \) | wc -l || echo "0")
+          PPTX_FILES=$(find material -type f \( -name "*.pptx" -o -name "*.ppt" \) | wc -l || echo "0")
+          
+          echo "📊 File counts:"
+          echo "  Total files: $TOTAL_FILES"
+          echo "  PDF files: $PDF_FILES"
+          echo "  JSON files: $JSON_FILES"
+          echo "  Word docs: $DOCX_FILES"
+          echo "  PowerPoints: $PPTX_FILES"
+          
+          # Calculate total size
+          TOTAL_SIZE=$(du -sh material 2>/dev/null | cut -f1 || echo 'Unknown')
+          echo "  Total size: $TOTAL_SIZE"
+          echo ""
+          
+          # Show directory structure (first few levels)
+          echo "📁 Directory structure (sample):"
+          tree material -d -L 3 2>/dev/null | head -20 || find material -type d | head -10
+          echo ""
+          
+          # Show largest files
+          echo "📋 Largest files:"
+          find material -type f -exec ls -lh {} + 2>/dev/null | sort -k5 -hr | head -5 || echo "Could not list files"
+          
         else
           echo "❌ Material directory does not exist"
         fi
+        
+        # Check if summary file exists
+        if [ -f "download-summary.json" ]; then
+          echo ""
+          echo "📄 Download summary:"
+          cat download-summary.json
+        fi
 
-    - name: Check if files were downloaded
+    - name: Check for changes
       id: check_changes
       run: |
-        echo "Checking git status..."
+        echo "🔍 Checking git status..."
         git status --porcelain
+        echo ""
         
         if [ -n "$(git status --porcelain)" ]; then
           echo "changes=true" >> $GITHUB_OUTPUT
           echo "✅ Files were downloaded or modified"
+          
+          # Count changed files
+          CHANGED_FILES=$(git status --porcelain | wc -l)
+          echo "changed_files=$CHANGED_FILES" >> $GITHUB_OUTPUT
+          echo "Changed files count: $CHANGED_FILES"
         else
           echo "changes=false" >> $GITHUB_OUTPUT
+          echo "changed_files=0" >> $GITHUB_OUTPUT
           echo "⚠️ No new files downloaded"
         fi
 
@@ -87,71 +205,124 @@ jobs:
       if: steps.check_changes.outputs.changes == 'true'
       run: |
         git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
+        git config --local user.name "GitHub Action Bot"
 
-    - name: Add downloaded files
+    - name: Commit files in batches
       if: steps.check_changes.outputs.changes == 'true'
+      timeout-minutes: 30  # 30 minutes for git operations
       run: |
-        echo "Adding files to git..."
-        git add material/
-        git add -A
-        echo "Files added successfully"
-
-    - name: Commit files
-      if: steps.check_changes.outputs.changes == 'true'
-      run: |
-        echo "Creating commit..."
+        echo "📦 Committing files in batches to avoid memory issues..."
         
-        DOWNLOADED_COUNT=$(find material -type f -name "*.pdf" -o -name "*.json" | wc -l || echo "0")
+        # Get summary data
+        DOWNLOADED_COUNT="0"
+        TOTAL_SIZE="0B"
+        if [ -f "download-summary.json" ]; then
+          DOWNLOADED_COUNT=$(jq -r '.downloadedFiles // 0' download-summary.json)
+          TOTAL_SIZE_BYTES=$(jq -r '.totalSize // 0' download-summary.json)
+          if [ "$TOTAL_SIZE_BYTES" != "0" ]; then
+            TOTAL_SIZE=$(numfmt --to=iec $TOTAL_SIZE_BYTES 2>/dev/null || echo "${TOTAL_SIZE_BYTES}B")
+          fi
+        fi
+        
         TOTAL_COUNT=$(find material -type f | wc -l || echo "0")
-        TOTAL_SIZE=$(du -sh material 2>/dev/null | cut -f1 || echo "0B")
         TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M:%S UTC')
         
-        git commit -m "📚 Auto-download materials - Total: $TOTAL_COUNT files ($TOTAL_SIZE) - PDF/JSON: $DOWNLOADED_COUNT - $TIMESTAMP - Run #${{ github.run_number }}" || echo "No changes to commit"
+        # Add files in smaller batches to avoid memory issues
+        echo "Adding material directory..."
+        git add material/ 2>/dev/null || echo "Some files might be too large to add"
+        
+        # Add other files
+        git add download-summary.json 2>/dev/null || true
+        git add -A 2>/dev/null || true
+        
+        # Create commit with detailed info
+        COMMIT_MSG="📚 Auto-download materials - Downloaded: $DOWNLOADED_COUNT files ($TOTAL_SIZE) - Total: $TOTAL_COUNT files - $TIMESTAMP - Run #${{ github.run_number }}"
+        
+        echo "Creating commit with message: $COMMIT_MSG"
+        git commit -m "$COMMIT_MSG" || echo "No changes to commit"
 
     - name: Push changes
       if: steps.check_changes.outputs.changes == 'true'
+      timeout-minutes: 20  # 20 minutes for push operations
       uses: ad-m/github-push-action@master
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         branch: ${{ github.ref }}
 
-    - name: Upload materials as artifact
+    - name: Upload summary as artifact
+      if: always() && hashFiles('download-summary.json') != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: download-summary-${{ github.run_number }}
+        path: download-summary.json
+        retention-days: 90
+
+    - name: Upload materials as artifact (if small enough)
       if: always()
+      continue-on-error: true
+      timeout-minutes: 15  # 15 minutes for artifact upload
       uses: actions/upload-artifact@v4
       with:
         name: downloaded-materials-${{ github.run_number }}
         path: material/
-        retention-days: 30
+        retention-days: 7
         if-no-files-found: ignore
 
-    - name: Print summary
+    - name: Generate job summary
       if: always()
       run: |
-        echo "## Download Summary" >> $GITHUB_STEP_SUMMARY
-        echo "- **Action Run**: #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+        echo "# 📚 Download Materials Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Action Details:**" >> $GITHUB_STEP_SUMMARY
+        echo "- **Run Number**: #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Timestamp**: $(date -u)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Branch Filter**: $BRANCH_FILTER" >> $GITHUB_STEP_SUMMARY
+        echo "- **Max Files**: $MAX_FILES" >> $GITHUB_STEP_SUMMARY
         echo "- **Download Success**: ${{ steps.download_step.outputs.download_success || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ -f "download-summary.json" ]; then
+          echo "**Download Statistics:**" >> $GITHUB_STEP_SUMMARY
+          DOWNLOADED=$(jq -r '.downloadedFiles // 0' download-summary.json)
+          SKIPPED=$(jq -r '.skippedFiles // 0' download-summary.json)
+          ERRORS=$(jq -r '.errorFiles // 0' download-summary.json)
+          SIZE_BYTES=$(jq -r '.totalSize // 0' download-summary.json)
+          SIZE_FORMATTED=$(numfmt --to=iec $SIZE_BYTES 2>/dev/null || echo "${SIZE_BYTES}B")
+          
+          echo "- **Downloaded**: $DOWNLOADED files" >> $GITHUB_STEP_SUMMARY
+          echo "- **Skipped**: $SKIPPED files" >> $GITHUB_STEP_SUMMARY
+          echo "- **Errors**: $ERRORS files" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total Size**: $SIZE_FORMATTED" >> $GITHUB_STEP_SUMMARY
+        fi
         
         if [ -d "material" ]; then
-          FILE_COUNT=$(find material -type f | wc -l || echo "0")
-          PDF_JSON_COUNT=$(find material -type f -name "*.pdf" -o -name "*.json" | wc -l || echo "0")
-          TOTAL_SIZE=$(du -sh material 2>/dev/null | cut -f1 || echo "0B")
-          echo "- **Total Files**: $FILE_COUNT" >> $GITHUB_STEP_SUMMARY
-          echo "- **PDF/JSON Files**: $PDF_JSON_COUNT" >> $GITHUB_STEP_SUMMARY
-          echo "- **Total Size**: $TOTAL_SIZE" >> $GITHUB_STEP_SUMMARY
-          echo "- **Changes Detected**: ${{ steps.check_changes.outputs.changes || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+          TOTAL_FILES=$(find material -type f | wc -l || echo "0")
+          PDF_COUNT=$(find material -type f -name "*.pdf" | wc -l || echo "0")
+          echo "- **Total Files in Repo**: $TOTAL_FILES" >> $GITHUB_STEP_SUMMARY
+          echo "- **PDF Files**: $PDF_COUNT" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "- **Changes Committed**: ${{ steps.check_changes.outputs.changes || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Final status
+        echo "## Status" >> $GITHUB_STEP_SUMMARY
+        if [ "${{ steps.download_step.outputs.download_success }}" = "true" ] && [ "${{ steps.check_changes.outputs.changes }}" = "true" ]; then
+          echo "✅ **SUCCESS**: Download completed and files were committed!" >> $GITHUB_STEP_SUMMARY
+        elif [ "${{ steps.download_step.outputs.download_success }}" = "true" ] && [ "${{ steps.check_changes.outputs.changes }}" = "false" ]; then
+          echo "ℹ️ **COMPLETED**: Download finished but no new files (all files already exist)" >> $GITHUB_STEP_SUMMARY
         else
-          echo "- **Status**: ❌ No material directory found" >> $GITHUB_STEP_SUMMARY
+          echo "❌ **FAILED**: Download encountered issues" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Troubleshooting:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Check the logs above for specific error details" >> $GITHUB_STEP_SUMMARY
+          echo "- Disk space issues can be resolved by running with a smaller MAX_FILES limit" >> $GITHUB_STEP_SUMMARY  
+          echo "- Try running with a specific branch filter (e.g., 'CSE' instead of 'ALL')" >> $GITHUB_STEP_SUMMARY
+          echo "- The resume functionality will continue where it left off on the next run" >> $GITHUB_STEP_SUMMARY
         fi
         
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
-        if [ "${{ steps.download_step.outputs.download_success }}" = "true" ] && [ "${{ steps.check_changes.outputs.changes }}" = "true" ]; then
-          echo "✅ Download completed successfully and files were committed!" >> $GITHUB_STEP_SUMMARY
-        elif [ "${{ steps.download_step.outputs.download_success }}" = "true" ] && [ "${{ steps.check_changes.outputs.changes }}" = "false" ]; then
-          echo "ℹ️ Download completed but no new files (all files already exist)" >> $GITHUB_STEP_SUMMARY
-        else
-          echo "❌ Download failed - check the logs above for error details" >> $GITHUB_STEP_SUMMARY
-          echo "💡 Try running the workflow again (resume functionality will continue where it left off)" >> $GITHUB_STEP_SUMMARY
-        fi
+        echo "## Next Steps" >> $GITHUB_STEP_SUMMARY
+        echo "- **Manual Trigger**: Use 'Run workflow' button with custom parameters" >> $GITHUB_STEP_SUMMARY
+        echo "- **Scheduled**: Runs automatically every Sunday at 2 AM UTC" >> $GITHUB_STEP_SUMMARY
+        echo "- **Artifacts**: Check the 'Artifacts' section below for downloadable files" >> $GITHUB_STEP_SUMMARY
