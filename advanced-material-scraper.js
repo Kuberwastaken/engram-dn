@@ -17,8 +17,7 @@ class AdvancedMaterialScraper {
         this.maxRetries = options.maxRetries || 5;
         this.progressFile = './scraper-progress.json';
         this.resumeMode = options.resume || false;
-        
-        this.stats = {
+          this.stats = {
             totalFiles: 0,
             downloadedFiles: 0,
             skippedFiles: 0,
@@ -27,11 +26,12 @@ class AdvancedMaterialScraper {
             startTime: new Date().toISOString(),
             totalSize: 0,
             downloadSpeed: 0,
-            estimatedTimeRemaining: 0
-        };
-          // Enhanced configuration
+            estimatedTimeRemaining: 0,
+            diskSpaceWarnings: 0,
+            batchesCompleted: 0
+        };        // Enhanced configuration
         this.config = {
-            maxFileSize: Infinity, // No file size limit - download everything
+            maxFileSize: options.maxFileSize || 50 * 1024 * 1024, // 50MB default for space optimization
             requestDelay: options.requestDelay || 25, // Faster for drive links
             chunkSize: 1024 * 1024, // 1MB chunks for progress tracking
             validateDownloads: options.validate || true,
@@ -40,7 +40,10 @@ class AdvancedMaterialScraper {
             filterBranches: options.branches || null, // Filter specific branches
             filterSemesters: options.semesters || null, // Filter specific semesters
             filterSubjects: options.subjects || null, // Filter specific subjects
-            dryRun: options.dryRun || false
+            dryRun: options.dryRun || false,
+            batchSize: options.batchSize || 100, // Process files in batches
+            diskSpaceThreshold: options.diskSpaceThreshold || 2 * 1024 * 1024 * 1024, // 2GB minimum free space
+            enableDiskMonitoring: options.enableDiskMonitoring !== false // Default true
         };
           // Download organization - simplified since priority isn't needed
         this.downloadsByPriority = {
@@ -139,12 +142,47 @@ class AdvancedMaterialScraper {
         const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
         const i = Math.floor(Math.log(bytes) / Math.log(k));
         return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-    }
-
-    formatTime(seconds) {
+    }    formatTime(seconds) {
         if (seconds < 60) return `${Math.round(seconds)}s`;
         if (seconds < 3600) return `${Math.round(seconds / 60)}m ${Math.round(seconds % 60)}s`;
         return `${Math.round(seconds / 3600)}h ${Math.round((seconds % 3600) / 60)}m`;
+    }
+
+    async checkDiskSpace() {
+        try {
+            const { execSync } = require('child_process');
+            const output = execSync('df / | tail -1', { encoding: 'utf8' });
+            const parts = output.trim().split(/\s+/);
+            const availableKB = parseInt(parts[3]);
+            const availableBytes = availableKB * 1024;
+            
+            return {
+                available: availableBytes,
+                availableMB: Math.round(availableBytes / 1024 / 1024),
+                availableGB: Math.round(availableBytes / 1024 / 1024 / 1024 * 10) / 10
+            };
+        } catch (error) {
+            console.log(`⚠️ Could not check disk space: ${error.message}`);
+            return { available: Infinity, availableMB: Infinity, availableGB: Infinity };
+        }
+    }
+
+    async monitorDiskSpace() {
+        if (!this.config.enableDiskMonitoring) return true;
+        
+        const diskInfo = await this.checkDiskSpace();
+        
+        if (diskInfo.available < this.config.diskSpaceThreshold) {
+            this.stats.diskSpaceWarnings++;
+            console.log(`🚨 LOW DISK SPACE WARNING: ${diskInfo.availableGB}GB remaining (threshold: ${Math.round(this.config.diskSpaceThreshold / 1024 / 1024 / 1024)}GB)`);
+            
+            if (diskInfo.availableMB < 1024) { // Less than 1GB
+                console.log(`❌ CRITICAL: Disk space too low (${diskInfo.availableMB}MB). Stopping downloads.`);
+                return false;
+            }
+        }
+        
+        return true;
     }
 
     updateProgressStats() {
@@ -216,7 +254,21 @@ class AdvancedMaterialScraper {
                 }
             });            const actualSize = parseInt(response.headers['content-length'] || 0);
             
-            // Log file size but don't skip any files
+            // Check file size limit (now enforced again for space optimization)
+            if (actualSize > this.config.maxFileSize) {
+                console.log(`⏭️ Skipping ${fileName} - too large (${this.formatFileSize(actualSize)}, limit: ${this.formatFileSize(this.config.maxFileSize)})`);
+                this.stats.skippedFiles++;
+                this.progressTracker.downloadedInInterval++;
+                return { success: true, skipped: true };
+            }
+            
+            // Check disk space before downloading
+            if (!(await this.monitorDiskSpace())) {
+                console.log(`💾 Stopping downloads due to low disk space`);
+                throw new Error('Insufficient disk space');
+            }
+            
+            // Log file size
             if (actualSize > 0) {
                 console.log(`📥 Downloading ${fileName} (${this.formatFileSize(actualSize)})`);
             }
@@ -501,16 +553,18 @@ class AdvancedMaterialScraper {
         if (this.downloadQueue.length === 0) {
             console.log('⚠️ No files found to download.');
             return;
-        }
-          console.log(`\n📊 Configuration:`);
+        }        console.log(`\n📊 Configuration:`);
         console.log(`   📁 Output directory: ${this.materialsDir}`);
         console.log(`   🔄 Concurrent downloads: ${this.concurrentDownloads}`);
-        console.log(`   💾 File size limit: NONE (downloading all files regardless of size)`);
+        console.log(`   💾 Max file size: ${this.formatFileSize(this.config.maxFileSize)}`);
+        console.log(`   💽 Disk space threshold: ${this.formatFileSize(this.config.diskSpaceThreshold)}`);
+        console.log(`   📦 Batch size: ${this.config.batchSize} files`);
         console.log(`   ⏱️ Request delay: ${this.config.requestDelay}ms`);
         console.log(`   🔍 Validation: ${this.config.validateDownloads ? 'Enabled' : 'Disabled'}`);
         console.log(`   🆔 MD5 hashes: ${this.config.createMd5 ? 'Enabled' : 'Disabled'}`);
         console.log(`   ⏭️ Skip existing: ${this.config.skipExisting ? 'Enabled' : 'Disabled'}`);
         console.log(`   🔄 Resume mode: ${this.resumeMode ? 'Enabled' : 'Disabled'}`);
+        console.log(`   💾 Disk monitoring: ${this.config.enableDiskMonitoring ? 'Enabled' : 'Disabled'}`);
         
         if (this.config.filterBranches) {
             console.log(`   🎯 Filtered branches: ${this.config.filterBranches.join(', ')}`);
@@ -694,12 +748,59 @@ Examples:
 if (import.meta.url === `file://${process.argv[1]}`) {
     const options = parseArgs();
     const scraper = new AdvancedMaterialScraper(options);
+  }
+
+// Command line argument parsing
+function parseArgs() {
+    const args = process.argv.slice(2);
+    const options = {};
     
-    scraper.downloadAllMaterials().catch(error => {
-        console.error('💥 CRITICAL ERROR:', error);
-        console.error(error.stack);
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        if (arg.startsWith('--')) {
+            const [key, value] = arg.substring(2).split('=');
+            if (value !== undefined) {
+                // Handle boolean values
+                if (value === 'true') options[key] = true;
+                else if (value === 'false') options[key] = false;
+                // Handle numeric values
+                else if (!isNaN(value)) options[key] = Number(value);
+                // Handle strings
+                else options[key] = value;
+            } else {
+                // Flag without value (assume true)
+                options[key] = true;
+            }
+        }
+    }
+    
+    return options;
+}
+
+// Initialize and run the scraper
+async function main() {
+    try {
+        const options = parseArgs();
+        console.log('🚀 Advanced Material Scraper Starting...');
+        
+        if (Object.keys(options).length > 0) {
+            console.log('📋 Command line options:', options);
+        }
+        
+        const scraper = new AdvancedMaterialScraper(options);
+        await scraper.downloadAllMaterials();
+        
+        console.log('\n🎉 Scraper completed!');
+        process.exit(0);
+    } catch (error) {
+        console.error('❌ Fatal error:', error.message);
         process.exit(1);
-    });
+    }
+}
+
+// Only run main if this file is executed directly (not imported)
+if (process.argv[1] === new URL(import.meta.url).pathname) {
+    main();
 }
 
 export default AdvancedMaterialScraper;
