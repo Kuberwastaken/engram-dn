@@ -1,0 +1,19 @@
+{
+  "downloadedFiles": 2449,
+  "skippedFiles": 2,
+  "errorFiles": 34,
+  "totalSize": 113051914,
+  "errors": [
+    "Erwin Kreyszig - Advanced Engineering Mathematics-Wiley (2005).pdf: timeout of 10000ms exceeded",
+    "Semester sem1: files.sort is not a function",
+    "DS Full [TopperWorld].pdf: timeout of 10000ms exceeded",
+    "DS Full [TopperWorld].pdf: timeout of 10000ms exceeded",
+    "indian knowledge system.pdf: timeout of 10000ms exceeded",
+    "DS Full [TopperWorld].pdf: timeout of 10000ms exceeded",
+    "indian knowledge system.pdf: timeout of 10000ms exceeded",
+    "Laplace Examples.pdf: timeout of 10000ms exceeded",
+    "Lec 1 C&S.pdf: timeout of 10000ms exceeded",
+    "UNIT 3&4 (Best IMO).pdf: timeout of 10000ms exceeded"
+  ],
+  "completedAt": "2025-06-02T00:35:20.622Z"
+}
