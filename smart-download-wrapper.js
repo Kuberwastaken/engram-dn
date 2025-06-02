@@ -124,10 +124,10 @@ class SmartDownloader {
         this.pausedForRateLimit = false;
         return false;
       }
-    }
-
-    return false;
+    }            return false;
   }
+
+  getDirectorySize(dirPath) {
     try {
       const result = execSync(`du -sb "${dirPath}" 2>/dev/null | cut -f1`, { encoding: 'utf8' });
       return parseInt(result.trim()) || 0;
